@@ -11,6 +11,7 @@
 pub use error::Error;
 pub use minimp3_sys as ffi;
 
+use audio_core::{AsInterleavedMut, InterleavedBuf};
 use slice_deque::SliceDeque;
 use std::{io, marker::Send, mem, ops};
 
@@ -62,8 +63,38 @@ impl Pcm {
     /// Construct a new re-usable pcm data buffer.
     pub fn new() -> Self {
         Self {
-            data: Vec::with_capacity(MAX_SAMPLES_PER_FRAME),
+            data: vec![0; MAX_SAMPLES_PER_FRAME],
         }
+    }
+}
+
+impl InterleavedBuf for Pcm {
+    fn reserve_frames(&mut self, frames: usize) {
+        if self.data.capacity() < frames {
+            self.data.resize(frames, 0);
+        }
+    }
+
+    fn set_topology(&mut self, channels: usize, frames: usize) {
+        let len = channels * frames;
+        assert!(len < self.data.capacity());
+
+        // Safety: we know the buffer stores a type that is Copy (i16), so no
+        // need to drop elements, we've also asserted that the requested length
+        // is within allocated bounds above.
+        unsafe {
+            self.data.set_len(len);
+        }
+    }
+}
+
+impl AsInterleavedMut<i16> for Pcm {
+    fn as_interleaved_mut(&mut self) -> &mut [i16] {
+        self.data.as_mut()
+    }
+
+    fn as_interleaved_mut_ptr(&mut self) -> *mut i16 {
+        self.data.as_mut_ptr()
     }
 }
 
@@ -134,22 +165,25 @@ impl<R> Decoder<R> {
     }
 
     /// Decode a frame using a preallocated [Pcm] buffer.
-    fn decode_frame(&mut self, pcm: &mut Pcm) -> Result<FrameInfo, Error> {
+    fn decode_frame<O>(&mut self, pcm: &mut O) -> Result<FrameInfo, Error>
+    where
+        O: AsInterleavedMut<i16> + InterleavedBuf,
+    {
+        pcm.reserve_frames(MAX_SAMPLES_PER_FRAME);
+
         let mut frame_info = unsafe { mem::zeroed() };
         let samples: usize = unsafe {
             ffi::mp3dec_decode_frame(
                 &mut *self.decoder,
                 self.buffer.as_ptr(),
                 self.buffer.len() as _,
-                pcm.data.as_mut_ptr(),
+                pcm.as_interleaved_mut().as_mut_ptr(),
                 &mut frame_info,
             ) as _
         };
 
         if samples > 0 {
-            unsafe {
-                pcm.data.set_len(samples * frame_info.channels as usize);
-            }
+            pcm.set_topology(frame_info.channels as usize, samples);
         }
 
         let frame = FrameInfo {
@@ -258,7 +292,10 @@ impl<R: io::Read> Decoder<R> {
     /// This requires a buffer to be provided through `pcm` which can be
     /// re-used. This dereferences to `&[i16]` which is a slice containing the
     /// decoded frame data.
-    pub fn next_frame_with_pcm(&mut self, pcm: &mut Pcm) -> Result<FrameInfo, Error> {
+    pub fn next_frame_with_pcm<O>(&mut self, pcm: &mut O) -> Result<FrameInfo, Error>
+    where
+        O: AsInterleavedMut<i16> + InterleavedBuf,
+    {
         loop {
             // Keep our buffers full
             let bytes_read = if self.buffer.len() < REFILL_TRIGGER {
