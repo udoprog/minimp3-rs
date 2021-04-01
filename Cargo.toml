@@ -10,6 +10,8 @@ repository = "https://github.com/germangb/minimp3-rs.git"
 edition = "2018"
 
 [dependencies]
+audio = { git = "https://github.com/udoprog/audio", branch = "main" }
+audio-core = { git = "https://github.com/udoprog/audio", branch = "main" }
 slice-deque = "0.3.0"
 minimp3-sys = { version = "0.3", path = "minimp3-sys" }
 tokio = { version = "1.0", features = ["io-util"], optional = true }
